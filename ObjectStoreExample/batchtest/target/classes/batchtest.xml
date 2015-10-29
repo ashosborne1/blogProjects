@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+
+<mule xmlns:objectstore="http://www.mulesoft.org/schema/mule/objectstore" xmlns:metadata="http://www.mulesoft.org/schema/mule/metadata" xmlns:json="http://www.mulesoft.org/schema/mule/json" xmlns:tracking="http://www.mulesoft.org/schema/mule/ee/tracking" xmlns:dw="http://www.mulesoft.org/schema/mule/ee/dw" xmlns:vm="http://www.mulesoft.org/schema/mule/vm" xmlns:http="http://www.mulesoft.org/schema/mule/http" xmlns:batch="http://www.mulesoft.org/schema/mule/batch" xmlns="http://www.mulesoft.org/schema/mule/core" xmlns:doc="http://www.mulesoft.org/schema/mule/documentation"
+	xmlns:spring="http://www.springframework.org/schema/beans" 
+	xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+	xsi:schemaLocation="http://www.springframework.org/schema/beans http://www.springframework.org/schema/beans/spring-beans-current.xsd
+http://www.mulesoft.org/schema/mule/core http://www.mulesoft.org/schema/mule/core/current/mule.xsd
+http://www.mulesoft.org/schema/mule/http http://www.mulesoft.org/schema/mule/http/current/mule-http.xsd
+http://www.mulesoft.org/schema/mule/batch http://www.mulesoft.org/schema/mule/batch/current/mule-batch.xsd
+http://www.mulesoft.org/schema/mule/vm http://www.mulesoft.org/schema/mule/vm/current/mule-vm.xsd
+http://www.mulesoft.org/schema/mule/ee/dw http://www.mulesoft.org/schema/mule/ee/dw/current/dw.xsd
+http://www.mulesoft.org/schema/mule/ee/tracking http://www.mulesoft.org/schema/mule/ee/tracking/current/mule-tracking-ee.xsd
+http://www.mulesoft.org/schema/mule/json http://www.mulesoft.org/schema/mule/json/current/mule-json.xsd
+http://www.mulesoft.org/schema/mule/objectstore http://www.mulesoft.org/schema/mule/objectstore/current/mule-objectstore.xsd">
+    <spring:beans>
+        <spring:bean id="myListableObjectStore" class="org.mule.util.store.SimpleMemoryObjectStore"/>
+    </spring:beans>
+    <objectstore:config name="myObjectStore" objectStore-ref="myListableObjectStore" doc:name="ObjectStore"/>
+    <http:listener-config name="HTTP_Listener_Configuration" host="0.0.0.0" port="8081" doc:name="HTTP Listener Configuration"/>
+    <http:request-config name="HTTP_Request_Configuration" host="localhost" port="8081" doc:name="HTTP Request Configuration"/>
+    <flow name="batchtestFlow">
+        <http:listener config-ref="HTTP_Listener_Configuration" path="/test" metadata:id="248e50f8-f9f6-49b0-9cfd-3c2257357baa" doc:name="HTTP"/>
+        <dw:transform-message doc:name="Transform Message">
+            <dw:set-payload><![CDATA[%dw 1.0
+%output application/json
+---
+{
+	"fromSender": payload.from,
+	"toAddress": payload.to
+	
+}]]></dw:set-payload>
+        </dw:transform-message>
+        <json:json-to-object-transformer returnClass="java.util.HashMap" doc:name="JSON to Object"/>
+         <vm:outbound-endpoint exchange-pattern="one-way"
+            path="batchQueue" responseTimeout="10000" mimeType="text/plain"
+            doc:name="Call addToObjectstore flow" />
+        <set-payload value="{&quot;status&quot; : &quot;added&quot;}" doc:name="Set Payload"/>
+        <object-to-byte-array-transformer doc:name="Object to Byte Array"/>
+    </flow>
+    <flow name="AddToObjectStore" processingStrategy="synchronous">
+     <vm:inbound-endpoint exchange-pattern="one-way"
+            path="batchQueue" responseTimeout="10000" mimeType="text/plain"
+            doc:name="VM" />
+        <set-variable variableName="objectStoreSize" value="#[app.registry.myObjectStore.allKeys().size()]" doc:name="Set count"/>
+        <objectstore:store config-ref="myObjectStore" key="#[new java.lang.Integer(flowVars['objectStoreSize']+1)]" value-ref="#[payload]" doc:name="AddToObjectStore"/>
+        <choice doc:name="Choice">
+            <when expression="#[app.registry.myObjectStore.allKeys().size() &gt; 5]">
+                <objectstore:all-keys config-ref="myObjectStore" doc:name="Retrieve All Objects"/>
+                <set-variable variableName="allMessages" value="#[new java.util.ArrayList()]" doc:name="Create all message arraylist"/>
+                <foreach collection="#[payload]" doc:name="For Each" counterVariableName="i">
+                    <set-variable variableName="keyToRemove" value="#[payload]" doc:name="Set key of the message"/>
+                    <objectstore:retrieve config-ref="myObjectStore" key="#[payload]" doc:name="Retrieve message"/>
+                    <expression-component doc:name="Add message to all messages"><![CDATA[flowVars['allMessages'].add(payload)]]></expression-component>
+                    <objectstore:remove config-ref="myObjectStore" key="#[flowVars['keyToRemove']]" doc:name="Remove message"/>
+                </foreach>
+                <set-payload value="#[flowVars['allMessages']]" doc:name="Set Payload"/>
+                <json:object-to-json-transformer doc:name="Object to JSON"/>
+                <logger message="#[payload]" level="INFO" doc:name="Now call web service"/>
+            </when>
+            <otherwise>
+                <logger message="Not enough objects to invoke batch" level="INFO" doc:name="Logger"/>
+            </otherwise>
+        </choice>
+    </flow>
+</mule>
